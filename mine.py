@@ -1,797 +1,804 @@
-"""Это приложение будильник.
-Функционал:
-    основное окно содержит:
-        текущее время
-        текущие дата
-        время до срабатывания ближайшего будильника
-        кнопки установить будильник, выключить будильник, настройки.
-     Вспомогательные окна:
-        окно установки будильника
-            окно текущих будильников(до 5)
-                кнопки: удалить, изменить
-            кнопки: установить время, закрыть
-        окно настроек:
-            установить фон.
-            установить музыку.
-            сбросить все будильники.
-            закрыть
-    используемые библиотеки: pyglet, time, io
-"""
-
+"""Приложение будильник с отдельными окнами для каждой функции"""
 
 import pyglet
-import time
 from datetime import datetime, timedelta
 from pyglet import shapes
-from pyglet.window import key
 import os
+from pathlib import Path
+import calendar
 
-class AlarmApp:
-    def __init__(self, width=800, height=600, name="Будильник"):
+
+class Button:
+    """Универсальный класс кнопки"""
+    def __init__(self, x, y, width, height, color, text,
+                 font_name="Arial", font_size=16, text_color=(255, 255, 255, 255)):
+        self.x = x
+        self.y = y
         self.width = width
         self.height = height
-        self.alarms = []  # Список будильников: каждый будильник - словарь с временем и статусом
-        self.background_image = pyglet.image.load('res/bg.jpg')
-        self.alarm_sound = None
-        self.alarm_player = None
-        self.time_digits = [0, 0, 0, 0]
-        self.digit_sprites = []
-        for i in range(10):
-            try:
-                # Пробуем загрузить спрайт
-                img = pyglet.image.load(f'res/{i}.png')
-                self.digit_sprites.append(img)
-            except:
-                # Если нет файла, создаем текстовую метку
-                label = pyglet.text.Label(
-                    str(i), font_name="Times New Roman", font_size=36,
-                    x=0, y=0, anchor_x="center", anchor_y="center"
-                )
-                self.digit_sprites.append(label)
+        self.color = color
+        self.text = text
+        self.font_name = font_name
+        self.font_size = font_size
+        self.text_color = text_color
 
-        # Создание главного окна
-        self.window = pyglet.window.Window(width, height, name)
-        self.window.push_handlers(self)
+        # Создаем прямоугольник
+        self.rectangle = shapes.Rectangle(x, y, width, height, color=color)
 
-        # Создание текстовых меток
+        # Создаем текст
+        self.label = pyglet.text.Label(
+            text, font_name=font_name, font_size=font_size,
+            x=x + width//2, y=y + height//2,
+            anchor_x="center", anchor_y="center",
+            color=text_color
+        )
+
+    def draw(self):
+        """Отрисовка кнопки"""
+        self.rectangle.draw()
+        self.label.draw()
+
+    def is_clicked(self, x, y):
+        """Проверка, был ли клик по кнопке"""
+        return (self.x <= x <= self.x + self.width and
+                self.y <= y <= self.y + self.height)
+
+
+class BaseWindow(pyglet.window.Window):
+    """Базовый класс для всех окон"""
+    def __init__(self, app, width, height, title):
+        super().__init__(width=width, height=height, caption=title)
+        self.app = app
+        self.buttons = []
+        self.size_button = 260  # Стандартная ширина кнопки
+
+    def create_button(self, x, y, color, text, width=None, height=50, **kwargs):
+        """Создание кнопки с сохранением ссылки"""
+        if width is None:
+            width = self.size_button
+        button = Button(x, y, width, height, color, text, **kwargs)
+        self.buttons.append(button)
+        return button
+
+    def on_draw(self):
+        """Базовая отрисовка окна"""
+        self.clear()
+
+
+class MainWindow(BaseWindow):
+    """Главное окно приложения"""
+    def __init__(self, app):
+        super().__init__(app, width=800, height=600, title="Будильник")
+        self.background_image = None
+        self.load_background()
+        self.setup_ui()
+
+    def load_background(self):
+        """Загрузка фона"""
+        try:
+            bg_path = Path("res/bg.jpg")
+            if bg_path.exists():
+                self.background_image = pyglet.image.load(str(bg_path))
+        except:
+            self.background_image = None
+
+    def setup_ui(self):
+        """Настройка интерфейса главного окна"""
+        # Центр для кнопок
+        center_x = 500
+        start_y = self.height * 0.35
+
+        # Кнопка установки будильника
+        self.btn_set_alarm = self.create_button(
+            x=center_x,
+            y=start_y + 20,
+            color=(50, 180, 50),
+            text="Установить будильник",
+            font_size=18
+        )
+
+        # Кнопка настроек
+        self.btn_settings = self.create_button(
+            x=center_x,
+            y=start_y - 40,
+            color=(50, 100, 200),
+            text="Настройки",
+            font_size=18
+        )
+
+        # Кнопка остановки будильника
+        self.btn_stop = self.create_button(
+            x=center_x,
+            y=start_y - 100,
+            color=(200, 50, 50),
+            text="Остановить",
+            font_size=18
+        )
+
+        # Кнопка списка будильников
+        self.btn_list = self.create_button(
+            x=center_x,
+            y=start_y - 160,
+            color=(180, 100, 50),
+            text="Список будильников",
+            font_size=18
+        )
+
+        # Текстовые метки
         self.time_label = pyglet.text.Label(
-            "", font_name="Times New Roman", font_size=48,
-            x=width//2, y=height*0.7,
-            anchor_x="center", anchor_y="center"
+            "", font_name="Arial", font_size=48,
+            x=self.width//2, y=self.height*0.7,
+            anchor_x="center", anchor_y="center",
+            color=(255, 255, 255, 255)
         )
 
         self.date_label = pyglet.text.Label(
-            "", font_name="Times New Roman", font_size=24,
-            x=width//2, y=height*0.6,
-            anchor_x="center", anchor_y="center"
+            "", font_name="Arial", font_size=24,
+            x=self.width//2, y=self.height*0.63,
+            anchor_x="center", anchor_y="center",
+            color=(220, 220, 220, 255)
         )
 
         self.next_alarm_label = pyglet.text.Label(
-            "Нет активных будильников", font_name="Times New Roman", font_size=20,
-            x=width//2, y=height*0.5,
+            "Нет активных будильников",
+            font_name="Arial", font_size=20,
+            x=self.width//2, y=self.height*0.55,
             anchor_x="center", anchor_y="center",
-            color=(255, 50, 50, 255)
+            color=(255, 100, 100, 255)
         )
 
-        # Кнопки (прямоугольники с текстом)
-        button_height = 40
-        button_width = 220
-        button_y = height*0.3
-
-        self.set_alarm_button = shapes.Rectangle(
-            width//2 - button_width - 10, button_y, button_width, button_height,
-            color=(50, 150, 50)
-        )
-        self.set_alarm_text = pyglet.text.Label(
-            "Установить будильник", font_name="Times New Roman", font_size=16,
-            x=width//2 - button_width - 10 + button_width//2, y=button_y + button_height//2,
-            anchor_x="center", anchor_y="center"
-        )
-
-        self.settings_button = shapes.Rectangle(
-            width//2 + 10, button_y, button_width, button_height,
-            color=(50, 100, 200)
-        )
-        self.settings_text = pyglet.text.Label(
-            "Настройки", font_name="Times New Roman", font_size=16,
-            x=width//2 + 10 + button_width//2, y=button_y + button_height//2,
-            anchor_x="center", anchor_y="center"
-        )
-        self.stop_button = shapes.Rectangle(
-            width//2 -120, button_y-50, button_width, button_height,
-            color=(50, 100, 200)
-        )
-        self.stop_text = pyglet.text.Label(
-            "Остановить", font_name="Times New Roman", font_size=16,
-            x=width//2 - 120 + button_width//2, y=button_y + button_height//2-50,
-            anchor_x="center", anchor_y="center"
-        )
-        self.bg_button = shapes.Rectangle(
-            width//2 -120, button_y+150, button_width, button_height,
-            color=(50, 100, 200)
-        )
-        self.bg_text = pyglet.text.Label(
-            "Сменить фон", font_name="Times New Roman", font_size=16,
-            x=width//2 - 120 + button_width//2, y=button_y+150 + button_height//2,
-            anchor_x="center", anchor_y="center"
-        )
-
-        # Флаги для вспомогательных окон
-        self.show_alarm_window = False
-        self.show_settings_window = False
-
-        # Обновление времени каждую секунду
-        pyglet.clock.schedule_interval(self.update_time, 1.0)
-
-        # Загрузка звука по умолчанию
-        self.load_default_sound()
-
-        #Файловый менеджер
-        self.show_file_manager = False
-        self.current_directory = os.getcwd()
-        self.file_list = []
-        self.selected_file = None
-        self.scroll_offset = 0
-
-        self.update_file_list()
-
-    def update_file_list(self):
-        self.file_list = []
-        try:
-            if self.current_directory != os.path.dirname(self.current_directory):
-                self.file_list.append(("..","directory"))
-            for item in os.listdir(self.current_directory):
-                item_path = os.path.join(self.current_directory, item)
-                if os.path.isdir(item_path):
-                    self.file_list.append((item, "directory"))
-                elif item.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-                    self.file_list.append((item, "image"))
-                else:
-                    self.file_list.append((item, "file"))
-
-        except Exception as err:
-            print(f"Ошибка {err}")
-
-    def draw_file_manager(self):
-        """Отрисовка файлового менеджера"""
-        # Полупрозрачный фон
-        overlay = shapes.Rectangle(0, 0, self.width, self.height, color=(0, 0, 0, 200))
-        overlay.draw()
-
-        # Окно файлового менеджера
-        window_width = 600
-        window_height = 500
-        window_x = (self.width - window_width) // 2
-        window_y = (self.height - window_height) // 2
-
-        # Фон окна
-        window_bg = shapes.Rectangle(
-            window_x, window_y, window_width, window_height,
-            color=(240, 240, 240)
-        )
-        window_bg.draw()
-
-        # Рамка окна
-        window_frame = shapes.Rectangle(
-            window_x-2, window_y-2, window_width+4, window_height+4,
-            color=(100, 100, 100)
-        )
-        window_frame.draw()
-
-        # Заголовок окна
-        title_bg = shapes.Rectangle(
-            window_x, window_y + window_height - 50, window_width, 50,
-            color=(200, 200, 200)
-        )
-        title_bg.draw()
-
-        title = pyglet.text.Label(
-            f"Выбор фона: {self.current_directory}",
-            font_name="Times New Roman", font_size=18,
-            x=self.width//2, y=window_y + window_height - 25,
-            anchor_x="center", anchor_y="center"
-        )
-        title.draw()
-
-        # Кнопка закрытия
-        close_button = shapes.Rectangle(
-            window_x + window_width - 40, window_y + window_height - 40, 30, 30,
-            color=(255, 100, 100)
-        )
-        close_button.draw()
-
-        close_text = pyglet.text.Label(
-            "X", font_name="Times New Roman", font_size=16,
-            x=window_x + window_width - 25, y=window_y + window_height - 25,
-            anchor_x="center", anchor_y="center"
-        )
-        close_text.draw()
-
-        # Область списка файлов
-        list_x = window_x + 20
-        list_y = window_y + window_height - 90
-        list_width = window_width - 40
-        list_height = window_height - 150
-
-        # Фон списка
-        list_bg = shapes.Rectangle(
-            list_x, list_y - list_height, list_width, list_height,
-            color=(255, 255, 255)
-        )
-        list_bg.draw()
-
-        # Рамка списка
-        list_frame = shapes.Rectangle(
-            list_x-1, list_y - list_height - 1, list_width+2, list_height+2,
-            color=(150, 150, 150)
-        )
-        list_frame.draw()
-
-        # Отображение файлов
-        item_height = 30
-        max_items = list_height // item_height
-        start_index = max(0, self.scroll_offset)
-        end_index = min(len(self.file_list), start_index + max_items)
-
-        for i, (file_name, file_type) in enumerate(self.file_list[start_index:end_index]):
-            item_y = list_y - (i * item_height) - 20
-
-            # Выделение выбранного файла
-            if file_name == self.selected_file:
-                selection_bg = shapes.Rectangle(
-                    list_x, item_y - item_height, list_width, item_height,
-                    color=(200, 220, 255)
-                )
-                selection_bg.draw()
-
-            # Иконка в зависимости от типа
-            if file_type == "directory":
-                icon = "📁 "
-                color = (0, 0, 200, 255)
-            elif file_type == "image":
-                icon = "🖼️ "
-                color = (0, 150, 0, 255)
-            else:
-                icon = "📄 "
-                color = (100, 100, 100, 255)
-
-            # Имя файла
-            file_label = pyglet.text.Label(
-                f"{icon}{file_name}",
-                font_name="Times New Roman", font_size=14,
-                x=list_x + 10, y=item_y - item_height//2,
-                anchor_x="left", anchor_y="center",
-                color=color
-            )
-            file_label.draw()
-
-        # Кнопки управления
-        button_y = window_y + 40
-        button_width = 120
-        button_height = 40
-
-        # Кнопка "Выбрать"
-        select_button = shapes.Rectangle(
-            window_x + 50, button_y, button_width, button_height,
-            color=(50, 150, 50) if self.selected_file else (150, 150, 150)
-        )
-        select_button.draw()
-
-        select_text = pyglet.text.Label(
-            "Выбрать", font_name="Times New Roman", font_size=14,
-            x=window_x + 50 + button_width//2, y=button_y + button_height//2,
-            anchor_x="center", anchor_y="center"
-        )
-        select_text.draw()
-
-        # Кнопка "Отмена"
-        cancel_button = shapes.Rectangle(
-            window_x + window_width - 50 - button_width, button_y, button_width, button_height,
-            color=(150, 150, 150)
-        )
-        cancel_button.draw()
-
-        cancel_text = pyglet.text.Label(
-            "Отмена", font_name="Times New Roman", font_size=14,
-            x=window_x + window_width - 50 - button_width//2, y=button_y + button_height//2,
-            anchor_x="center", anchor_y="center"
-        )
-        cancel_text.draw()
-
-        # Подсказка
-        hint = pyglet.text.Label(
-            "Поддерживаемые форматы: PNG, JPG, JPEG, BMP",
-            font_name="Times New Roman", font_size=12,
-            x=self.width//2, y=window_y + 20,
+        self.title_label = pyglet.text.Label(
+            "БУДИЛЬНИК", font_name="Arial", font_size=36,
+            x=self.width//2, y=self.height*0.85,
             anchor_x="center", anchor_y="center",
-            color=(100, 100, 100, 255)
+            color=(255, 255, 255, 255)
         )
-        hint.draw()
 
-
-    def on_mouse_scroll(self, x, y, scroll_x, scroll_y):
-        """Прокрутка списка файлов"""
-        if self.show_file_manager:
-            self.scroll_offset = max(0, self.scroll_offset - int(scroll_y))
-
-
-
-
-    def load_default_sound(self):
-        # Создаем простой звук (в реальном приложении загрузите файл)
-        try:
-            # Пытаемся загрузить звуковой файл
-            if os.path.exists("res/alarm.wav"):
-                self.alarm_sound = pyglet.media.load("res/alarm.wav")
-        except:
-            # Если файла нет, создаем пустой плеер
-            self.alarm_sound = None
-
-    def update_time(self, dt):
-        """Обновление времени и проверка будильников"""
+    def update_time(self):
+        """Обновление времени"""
         now = datetime.now()
-
-        # Обновление времени
         self.time_label.text = now.strftime("%H:%M:%S")
         self.date_label.text = now.strftime("%d.%m.%Y")
-
-        # Проверка будильников
-        self.check_alarms(now)
-
-        # Обновление информации о ближайшем будильнике
         self.update_next_alarm_info()
-
-    def check_alarms(self, now):
-        """Проверка срабатывания будильников"""
-        current_time = now.strftime("%H:%M")
-        for alarm in self.alarms:
-            if alarm['time'] == current_time and not alarm['triggered']:
-                alarm['triggered'] = True
-                self.trigger_alarm()
-
-    def trigger_alarm(self):
-        """Срабатывание будильника"""
-
-        print("Будильник сработал!")
-        if self.alarm_sound:
-            self.alarm_player = pyglet.media.Player()
-            self.alarm_player.queue(self.alarm_sound)
-            self.alarm_player.play()
-
-    def stop_alarm(self):
-        if hasattr(self, 'alarm_player') and self.alarm_player:
-            self.alarm_player.pause()
 
     def update_next_alarm_info(self):
         """Обновление информации о ближайшем будильнике"""
-        if not self.alarms:
+        if not self.app.alarms:
             self.next_alarm_label.text = "Нет активных будильников"
             return
 
         now = datetime.now()
         next_alarm = None
-        min_diff = timedelta(days=1)
+        min_diff = None
 
-        for alarm in self.alarms:
-            if not alarm['triggered']:
-                alarm_time = datetime.strptime(alarm['time'], "%H:%M")
-                alarm_datetime = now.replace(hour=alarm_time.hour, minute=alarm_time.minute, second=0)
+        for alarm in self.app.alarms:
+            if alarm['triggered']:
+                continue
 
-                if alarm_datetime < now:
-                    alarm_datetime += timedelta(days=1)
+            alarm_datetime = datetime.strptime(
+                f"{alarm['date']} {alarm['time']}",
+                "%Y-%m-%d %H:%M"
+            )
 
-                diff = alarm_datetime - now
-                if diff < min_diff:
-                    min_diff = diff
-                    next_alarm = alarm
+            if alarm_datetime < now:
+                continue
 
-        if next_alarm:
+            diff = alarm_datetime - now
+            if min_diff is None or diff < min_diff:
+                min_diff = diff
+                next_alarm = alarm
+
+        if next_alarm and min_diff:
+            days = min_diff.days
             hours = min_diff.seconds // 3600
             minutes = (min_diff.seconds % 3600) // 60
-            self.next_alarm_label.text = f"Следующий будильник через: {hours:02d}:{minutes:02d}"
+
+            if days > 0:
+                self.next_alarm_label.text = f"Следующий через: {days}д {hours:02d}:{minutes:02d}"
+            else:
+                self.next_alarm_label.text = f"Следующий через: {hours:02d}:{minutes:02d}"
         else:
             self.next_alarm_label.text = "Нет активных будильников"
 
     def on_draw(self):
-        """Отрисовка окна"""
-        self.window.clear()
+        """Отрисовка главного окна"""
+        super().on_draw()
 
-        # Рисуем фон
+        # Фон
         if self.background_image:
             self.background_image.blit(0, 0)
+        else:
+            shapes.Rectangle(0, 0, self.width, self.height,
+                             color=(40, 60, 100)).draw()
 
-        # Рисуем метки
+        # Заголовок и текст
+        self.title_label.draw()
         self.time_label.draw()
         self.date_label.draw()
         self.next_alarm_label.draw()
 
-        # Рисуем кнопки
-        self.set_alarm_button.draw()
-        self.set_alarm_text.draw()
-        self.settings_button.draw()
-        self.settings_text.draw()
-        self.stop_button.draw()
-        self.stop_text.draw()
+        # Кнопки
+        for button in self.buttons:
+            button.draw()
 
-        # Отрисовка вспомогательных окон
-        if self.show_alarm_window:
-            self.draw_alarm_window()
-        elif self.show_settings_window:
-            self.draw_settings_window()
-            self.bg_button.draw()
-            self.bg_text.draw()
+    def on_mouse_press(self, x, y, button, modifiers):
+        """Обработка кликов"""
+        for btn in self.buttons:
+            if btn.is_clicked(x, y):
+                self.handle_button_click(btn)
+                return
 
-        #Рисуем файл менеджер
-        if self.show_file_manager:
-            self.draw_file_manager()
-    def draw_alarm_window(self):
-        """Отрисовка окна установки будильника"""
-        # Полупрозрачный фон
-        overlay = shapes.Rectangle(0, 0, self.width, self.height, color=(0, 0, 0, 150))
-        overlay.draw()
+    def handle_button_click(self, button):
+        """Обработка кликов по кнопкам главного окна"""
+        if button == self.btn_set_alarm:
+            # Получаем позицию главного окна
+            main_x, main_y = self.get_location()
+            alarm_window = AlarmWindow(self.app)
+            alarm_window.set_location(main_x + 50, main_y + 50)
 
-        # Окно
-        window_width = 500
-        window_height = 400
-        window_x = (self.width - window_width) // 2
-        window_y = (self.height - window_height) // 2
+        elif button == self.btn_settings:
+            main_x, main_y = self.get_location()
+            settings_window = SettingsWindow(self.app)
+            settings_window.set_location(main_x + 100, main_y + 100)
 
-        # Фон окна
-        window_bg = shapes.Rectangle(window_x-5, window_y-5, window_width+10, window_height+10, color=(255, 255, 100))
-        window_frame = shapes.Rectangle(window_x, window_y, window_width, window_height,color=(40, 40, 40))
-        window_bg.draw()
-        window_frame.draw()
+        elif button == self.btn_stop:
+            self.app.stop_alarm()
+
+        elif button == self.btn_list:
+            main_x, main_y = self.get_location()
+            list_window = AlarmListWindow(self.app)
+            list_window.set_location(main_x + 150, main_y + 150)
+
+
+class AlarmWindow(pyglet.window.Window):
+    """Окно установки будильника"""
+    def __init__(self, main_window):
+        super().__init__(width=600, height=500, caption="Установка будильника")
+        self.main_window = main_window
+
+        # Устанавливаем ТЕКУЩЕЕ время
+        now = datetime.now()
+        time_str = now.strftime("%H%M")  # "1430"
+        self.time_digits = [int(digit) for digit in time_str]
+
+        # Устанавливаем ТЕКУЩУЮ дату
+        date_str = now.strftime("%d%m%Y")  # "01012025"
+        self.date_digits = [int(digit) for digit in date_str]
+
+        # Загрузка спрайтов
+        self.digit_sprites = self.load_digit_sprites()
+
+        # Области кликов
+        self.time_areas = []
+        self.date_areas = []
+
+        self.setup_ui()
+        self.setup_click_areas()
+
+    def load_digit_sprites(self):
+        """Загрузка цифр"""
+        digit_sprites = []
+        for i in range(10):
+            try:
+                path = Path(f"res/{i}.png")
+                if path.exists():
+                    images = pyglet.image.load_animation(str(path))
+                    sprite = pyglet.sprite.Sprite(images, x=0, y=0)
+                    sprite.scale= 0.7
+                    digit_sprites.append(pyglet.sprite.Sprite(images))
+                else:
+                    digit_sprites.append(None)
+            except:
+                digit_sprites.append(None)
+        return digit_sprites
+
+    def setup_ui(self):
+        """Настройка интерфейса"""
+        # Кнопка добавления
+        self.btn_add = Button(
+            x=300,
+            y=60,
+            width=260,
+            height=50,
+            color=(50, 180, 50),
+            text="Добавить будильник",
+            font_size=18
+        )
+
+    def setup_click_areas(self):
+        """Настройка областей кликов"""
+        # Время: ЧЧ:ММ
+        time_x = 150
+        time_y = self.height - 100
+        for i in range(4):
+            x_pos = time_x + i * 60
+            if i == 1:
+                x_pos += 20
+            elif i > 2:
+                x_pos += 20
+            self.time_areas.append((x_pos, time_y - 25, 40, 50, i))
+
+        # Дата: ДД.ММ.ГГГГ
+        date_x = 150
+        offset_click = 0
+        date_y = self.height - 180
+        for i in range(8):
+            x_pos = date_x + i * 40 + offset_click
+            if i == 2 or i ==4:
+                offset_click += 20
+            if not (i == 4 or i == 5):
+                self.date_areas.append((x_pos, date_y - 20, 25, 40, i))
+
+    def on_draw(self):
+        """Отрисовка"""
+        self.clear()
+
+        # Фон
+        shapes.Rectangle(0, 0, self.width, self.height,
+                         color=(0, 0, 0)).draw()
 
         # Заголовок
         title = pyglet.text.Label(
-            "Установка будильника", font_name="Times New Roman", font_size=24,
-            x=self.width//2, y=window_y + window_height - 40,
-            anchor_x="center", anchor_y="center"
+            "Установка будильника", font_name="Arial", font_size=24,
+            x=self.width//2, y=self.height - 40,
+            anchor_x="center", anchor_y="center",
+            color=(255, 255, 255, 255)
         )
         title.draw()
 
-        # Блок для установки времени
-        time_block_y = window_y + window_height - 120
-
-        # Текст "Время:"
+        # Подписи
         time_label = pyglet.text.Label(
-            "Время:", font_name="Times New Roman", font_size=20,
-            x=window_x + 50, y=time_block_y,
-            anchor_x="left", anchor_y="center"
+            "Время:", font_name="Arial", font_size=20,
+            x=50, y=self.height - 100,
+            anchor_x="left", anchor_y="center",
+            color=(255, 255, 255, 255)
         )
         time_label.draw()
 
-        # 4 кнопки с цифрами (ЧЧ:ММ)
-        digit_width = 50//2
-        digit_height = 70//2
-        start_x = window_x+170
-
-        # Позиции для 4 цифр
-        positions = [
-            (start_x, time_block_y - 10),                    # Ч1
-            (start_x + digit_width + 5, time_block_y - 10),  # Ч2
-            (start_x + 2*digit_width + 20, time_block_y - 10),  # М1 (после двоеточия)
-            (start_x + 3*digit_width + 25, time_block_y - 10),  # М2
-        ]
-
-        # Рисуем 4 кнопки с цифрами
-        for i in range(4):
-            x, y = positions[i]
-
-            # Фон кнопки
-            btn_bg = shapes.Rectangle(
-                x, y - digit_height//2, digit_width, digit_height,
-                color=(200, 200, 200)
-            )
-            btn_bg.draw()
-
-            # Рамка кнопки
-            btn_frame = shapes.Rectangle(
-                x-1, y - digit_height//2 - 1, digit_width+2, digit_height+2,
-                color=(100, 100, 100)
-            )
-            btn_frame.draw()
-
-            # Цифра (используем спрайты из digit_sprites)
-            if hasattr(self, 'time_digits') and i < len(self.time_digits):
-                digit = self.time_digits[i]
-
-                # Проверяем, есть ли спрайты
-                if hasattr(self, 'digit_sprites') and len(self.digit_sprites) > digit:
-                    # Берем спрайт для текущей цифры
-                    sprite = self.digit_sprites[digit]
-
-                    # Рисуем спрайт по центру кнопки
-                    sprite_x = x
-                    sprite_y = y-17
-                    if isinstance(sprite, pyglet.sprite.Sprite):
-                        # Если это уже готовый спрайт
-                        sprite.x = sprite_x
-                        sprite.y = sprite_y
-                        sprite.draw()
-                    elif isinstance(sprite, pyglet.image.AbstractImage):
-                        # Если это изображение, создаем спрайт
-                        spr = pyglet.sprite.Sprite(sprite, x=sprite_x, y=sprite_y)
-                        spr.scale = 0.5  # Настрой масштаб под свои спрайты
-                        spr.draw()
-                    else:
-                        # Если это текстовая метка
-                        sprite.x = sprite_x
-                        sprite.y = sprite_y
-                        sprite.text = str(digit)
-                        sprite.draw()
-                else:
-                    # Запасной вариант - просто текст
-                    digit_text = pyglet.text.Label(
-                        str(digit), font_name="Times New Roman", font_size=36,
-                        x=x + digit_width//2, y=y,
-                        anchor_x="center", anchor_y="center"
-                    )
-                    digit_text.draw()
-
-        # Двоеточие между часами и минутами
-        colon_x = start_x + 2*digit_width + 10
-        colon = pyglet.text.Label(
-            ":", font_name="Times New Roman", font_size=36,
-            x=colon_x, y=time_block_y - 10,
-            anchor_x="center", anchor_y="center"
+        date_label = pyglet.text.Label(
+            "Дата:", font_name="Arial", font_size=20,
+            x=50, y=self.height - 180,
+            anchor_x="left", anchor_y="center",
+            color=(255, 255, 255, 255)
         )
+        date_label.draw()
+
+        # Отрисовка времени
+        time_y = self.height - 100
+        for i in range(4):
+            x_pos = 150 + i * 60
+            if i == 2:
+                x_pos += 20
+            elif i > 2:
+                x_pos += 20
+
+            digit = self.time_digits[i]
+            sprite = self.digit_sprites[digit]
+            if sprite is not None:
+                sprite.x = x_pos
+                sprite.y = time_y - 25
+                sprite.draw()
+            else:
+                label = pyglet.text.Label(
+                    str(digit), font_name="Arial", font_size=36,
+                    x=x_pos + 20, y=time_y,
+                    anchor_x="center", anchor_y="center",
+                    color=(255, 255, 255, 255)
+                )
+                label.draw()
+
+        # Двоеточие
+        colon_x = 150 + 2 * 50 + 5
+        colon = (pyglet.sprite.Sprite(pyglet.image.load("res/dthc.png"), x=colon_x, y=time_y-25))
+        colon.scale = 0.75
         colon.draw()
 
-        # Кнопка "Добавить"
-        add_button = shapes.Rectangle(
-            window_x + 200, window_y + 50, 200, 40,
-            color=(50, 150, 50)
-        )
-        add_button.draw()
+        # Отрисовка даты
+        date_y = self.height - 180
+        offset = 0
+        for i in range(8):
+            x_pos = 150 + i * 40 + offset
+            if i == 2 or i == 4:
+                x_pos += 20
+                offset += 20
 
-        add_text = pyglet.text.Label(
-            "Добавить будильник", font_name="Times New Roman", font_size=16,
-            x=window_x + 250, y=window_y + 70,
-            anchor_x="center", anchor_y="center"
-        )
-        add_text.draw()
+            digit = self.date_digits[i]
+            sprite = self.digit_sprites[digit]
+            if sprite is not None:
+                sprite.x = x_pos
 
-        # Список установленных будильников
-        alarms_label = pyglet.text.Label(
-            "Установленные будильники:", font_name="Times New Roman", font_size=18,
-            x=window_x + 20, y=time_block_y - 100,
-            anchor_x="left", anchor_y="center"
-        )
-        alarms_label.draw()
-
-        if self.alarms:
-            for i, alarm in enumerate(self.alarms):
-                alarm_text = pyglet.text.Label(
-                    f"{i+1}. {alarm['time']} {'(активен)' if not alarm['triggered'] else '(сработал)'}",
-                    font_name="Times New Roman", font_size=16,
-                    x=window_x + 40, y=time_block_y - 140 - i*30,
-                    anchor_x="left", anchor_y="center"
+                sprite.y = date_y - 20
+                sprite.draw()
+            else:
+                label = pyglet.text.Label(
+                    str(digit), font_name="Arial", font_size=28,
+                    x=x_pos + 12, y=date_y,
+                    anchor_x="center", anchor_y="center",
+                    color=(255, 255, 255, 255)
                 )
-                alarm_text.draw()
+                label.draw()
+
+        # Точки в дате
+        for pos in [2, 5]:
+            dot_x = 150 + pos * 30 + 20
+            dot = pyglet.sprite.Sprite(pyglet.image.load("res/thc.png"))
+            dot.x = dot_x
+            dot.y = date_y - 20
+            dot.scale = 0.5
+            dot.draw()
+
+        # Кнопка
+        self.btn_add.draw()
+
+        # Подсказка
+        hint = pyglet.text.Label(
+            "Кликните на цифру чтобы изменить",
+            font_name="Arial", font_size=12,
+            x=self.width//2, y=30,
+            anchor_x="center", anchor_y="center",
+            color=(200, 200, 200, 255)
+        )
+        hint.draw()
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        """Обработка кликов"""
+        # Кнопка добавления
+        if self.btn_add.is_clicked(x, y):
+            self.add_alarm()
+            return
+
+        # Клики по цифрам времени
+        for area_x, area_y, width, height, idx in self.time_areas:
+            if (area_x <= x <= area_x + width and
+                    area_y <= y <= area_y + height):
+                self.change_time_digit(idx)
+                return
+
+        # Клики по цифрам даты
+        for area_x, area_y, width, height, idx in self.date_areas:
+            if (area_x <= x <= area_x + width and
+                    area_y <= y <= area_y + height):
+                self.change_date_digit(idx)
+                return
+
+    def change_time_digit(self, idx):
+        """Изменить цифру времени"""
+        if idx == 0:  # Первая цифра часов
+            self.time_digits[idx] = (self.time_digits[idx] + 1) % 3
+        elif idx == 1:  # Вторая цифра часов
+            if self.time_digits[0] == 2:
+                self.time_digits[idx] = (self.time_digits[idx] + 1) % 4
+            else:
+                self.time_digits[idx] = (self.time_digits[idx] + 1) % 10
+        elif idx == 2:  # Первая цифра минут
+            self.time_digits[idx] = (self.time_digits[idx] + 1) % 6
+        else:  # Вторая цифра минут
+            self.time_digits[idx] = (self.time_digits[idx] + 1) % 10
+
+    def change_date_digit(self, idx):
+        """Изменить цифру даты"""
+        if idx == 0:  # Первая цифра дня
+            self.date_digits[idx] = (self.date_digits[idx] + 1) % 4
+        elif idx == 1:  # Вторая цифра дня
+            if self.date_digits[0] == 3:
+                self.date_digits[idx] = (self.date_digits[idx] + 1) % 2
+            else:
+                self.date_digits[idx] = (self.date_digits[idx] + 1) % 10
+        elif idx == 2:  # Первая цифра месяца
+            self.date_digits[idx] = (self.date_digits[idx] + 1) % 2
+        elif idx == 3:  # Вторая цифра месяца
+            if self.date_digits[2] == 1:
+                self.date_digits[idx] = (self.date_digits[idx] + 1) % 3
+            else:
+                self.date_digits[idx] = (self.date_digits[idx] + 1) % 10
+        else:  # Цифры года
+            self.date_digits[idx] = (self.date_digits[idx] + 1) % 10
+
+    def add_alarm(self):
+        """Добавить будильник"""
+        # Проверяем количество
+        if len(self.main_window.alarms) >= 5:
+            print("Максимум 5 будильников!")
+            return
+
+        # Формируем время
+        hours = self.time_digits[0] * 10 + self.time_digits[1]
+        minutes = self.time_digits[2] * 10 + self.time_digits[3]
+
+        # Проверяем время
+        if hours > 23 or minutes > 59:
+            print("Некорректное время!")
+            return
+
+        # Формируем дату
+        day = self.date_digits[0] * 10 + self.date_digits[1]
+        month = self.date_digits[2] * 10 + self.date_digits[3]
+        year = (self.date_digits[4] * 1000 + self.date_digits[5] * 100 +
+                self.date_digits[6] * 10 + self.date_digits[7])
+
+        # Проверяем дату
+        try:
+            alarm_date = datetime(year, month, day, hours, minutes)
+            if alarm_date < datetime.now():
+                print("Нельзя установить на прошедшее время!")
+                return
+        except:
+            print("Некорректная дата!")
+            return
+
+        # Добавляем будильник
+        new_alarm = {
+            'date': f"{year:04d}-{month:02d}-{day:02d}",
+            'time': f"{hours:02d}:{minutes:02d}",
+            'triggered': False
+        }
+
+        self.main_window.alarms.append(new_alarm)
+        print(f"Будильник добавлен: {new_alarm['date']} {new_alarm['time']}")
+
+        # Закрываем окно
+        self.close()
 
 
+class SettingsWindow(BaseWindow):
+    """Окно настроек"""
+    def __init__(self, app):
+        super().__init__(app, width=400, height=350, title="Настройки")
+        self.size_button = 300  # Шире чем стандартная
+        self.setup_ui()
 
-    def draw_settings_window(self):
-        """Отрисовка окна настроек"""
-        # Полупрозрачный фон
-        overlay = shapes.Rectangle(0, 0, self.width, self.height, color=(0, 0, 100, 150))
-        overlay.draw()
+    def setup_ui(self):
+        """Настройка интерфейса окна настроек"""
+        center_x = self.width // 2
+        start_y = self.height - 120
 
-        # Окно
-        window_width = 400
-        window_height = 300
-        window_x = (self.width - window_width) // 2
-        window_y = (self.height - window_height) // 2
+        # Кнопка смены фона
+        self.btn_bg = self.create_button(
+            x=center_x - self.size_button//2,
+            y=start_y,
+            color=(70, 100, 150),
+            text="Сменить фон",
+            font_size=18,
+            width=self.size_button
+        )
 
-        window_bg = shapes.Rectangle(window_x-5, window_y-5, window_width+10, window_height+10,color=( 255, 255, 100))
-        window_frame = shapes.Rectangle(window_x, window_y, window_width, window_height,color=(40, 40, 40))
-        window_bg.draw()
-        window_frame.draw()
+        # Кнопка смены мелодии
+        self.btn_sound = self.create_button(
+            x=center_x - self.size_button//2,
+            y=start_y - 70,
+            color=(70, 100, 150),
+            text="Сменить мелодию",
+            font_size=18,
+            width=self.size_button
+        )
+
+        # Кнопка сброса будильников
+        self.btn_reset = self.create_button(
+            x=center_x - self.size_button//2,
+            y=start_y - 140,
+            color=(200, 80, 80),
+            text="Сбросить все будильников",
+            font_size=18,
+            width=self.size_button
+        )
+
+    def on_draw(self):
+        """Отрисовка окна"""
+        super().on_draw()
+
+        # Темный фон
+        shapes.Rectangle(0, 0, self.width, self.height,
+                         color=(40, 50, 70)).draw()
 
         # Заголовок
         title = pyglet.text.Label(
-            "Настройки", font_name="Times New Roman", font_size=24,
-            x=self.width//2, y=window_y + window_height - 40,
-            anchor_x="center", anchor_y="center"
+            "Настройки", font_name="Arial", font_size=24,
+            x=self.width//2, y=self.height - 40,
+            anchor_x="center", anchor_y="center",
+            color=(255, 255, 255, 255)
         )
         title.draw()
 
-    def on_mouse_press(self, x, y, button, modifiers):
-        """Обработка кликов в файловом менеджере"""
-        if self.show_file_manager:
-            window_width = 600
-            window_height = 500
-            window_x = (self.width - window_width) // 2
-            window_y = (self.height - window_height) // 2
+        # Кнопки
+        for button in self.buttons:
+            button.draw()
 
-            # Кнопка закрытия
-            if (window_x + window_width - 40 <= x <= window_x + window_width - 10 and
-                    window_y + window_height - 40 <= y <= window_y + window_height - 10):
-                self.show_file_manager = False
-                self.selected_file = None
+    def on_mouse_press(self, x, y, button, modifiers):
+        """Обработка кликов"""
+        for btn in self.buttons:
+            if btn.is_clicked(x, y):
+                self.handle_button_click(btn)
                 return
 
-            # Кнопка "Выбрать"
-            button_y = window_y + 40
-            button_width = 120
-            button_height = 40
+    def handle_button_click(self, button):
+        """Обработка кликов по кнопкам"""
+        if button == self.btn_bg:
+            print("Смена фона (тут пока ищу решение)")
 
-            if (window_x + 50 <= x <= window_x + 50 + button_width and
-                    button_y <= y <= button_y + button_height and
-                    self.selected_file):
+        elif button == self.btn_sound:
+            print("Смена мелодии (тут пока ищу решение)")
+
+        elif button == self.btn_reset:
+            self.app.alarms.clear()
+            print("Все будильники сброшены")
 
 
-                # Формируем полный путь
-                file_path = os.path.join(self.current_directory, self.selected_file)
+class AlarmListWindow(BaseWindow):
+    """Окно списка будильников"""
+    def __init__(self, app):
+        super().__init__(app, width=500, height=400, title="Список будильников")
+        self.delete_buttons = []  # Кнопки удаления для каждого будильника
 
-                # Проверяем, что это изображение
-                if self.selected_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
-                    try:
-                        self.background_image = pyglet.image.load(file_path)
-                        print(f"Фон установлен: {self.selected_file}")
-                        self.show_file_manager = False
-                        self.selected_file = None
-                    except Exception as e:
-                        print(f"Ошибка загрузки изображения: {e}")
-                else:
-                    print("Выберите файл изображения!")
+    def on_draw(self):
+        """Отрисовка окна"""
+        super().on_draw()
 
-            # Кнопка "Отмена"
-            if (window_x + window_width - 50 - button_width <= x <= window_x + window_width - 50 and
-                    button_y <= y <= button_y + button_height):
-                self.show_file_manager = False
-                self.selected_file = None
+        # Темный фон
+        shapes.Rectangle(0, 0, self.width, self.height,
+                         color=(0, 0, 0)).draw()
 
-            # Клик по списку файлов
-            list_x = window_x + 20
-            list_y = window_y + window_height - 90
-            list_width = window_width - 40
-            list_height = window_height - 150
+        # Заголовок
+        title = pyglet.text.Label(
+            "Список будильников", font_name="Arial", font_size=24,
+            x=self.width//2, y=self.height - 40,
+            anchor_x="center", anchor_y="center",
+            color=(255, 255, 255, 255)
+        )
+        title.draw()
 
-            if (list_x <= x <= list_x + list_width and
-                    list_y - list_height <= y <= list_y):
+        # Заголовок таблицы
+        header = pyglet.text.Label(
+            "Дата          Время      Статус",
+            font_name="Arial", font_size=16,
+            x=50, y=self.height - 90,
+            anchor_x="left", anchor_y="center",
+            color=(200, 200, 100, 255)
+        )
+        header.draw()
 
-                # Определяем, по какому файлу кликнули
-                item_height = 30
-                max_items = list_height // item_height
-                start_index = max(0, self.scroll_offset)
+        # Список будильников
+        if not self.app.alarms:
+            no_alarms = pyglet.text.Label(
+                "Нет установленных будильников",
+                font_name="Arial", font_size=18,
+                x=self.width//2, y=self.height//2,
+                anchor_x="center", anchor_y="center",
+                color=(150, 150, 150, 255)
+            )
+            no_alarms.draw()
+        else:
+            # Очищаем старые кнопки удаления
+            self.delete_buttons.clear()
 
-                click_index = start_index + int((list_y - y -20) // item_height)
+            for i, alarm in enumerate(self.app.alarms):
+                y_pos = self.height - 120 - i * 30
 
-                if 0 <= click_index < len(self.file_list):
-                    file_name, file_type = self.file_list[click_index]
+                # Форматирование даты из YYYY-MM-DD в DD.MM.YYYY
+                date_parts = alarm['date'].split('-')
+                formatted_date = f"{date_parts[2]}.{date_parts[1]}.{date_parts[0]}"
 
-                    if file_type == "directory":
-                        # Переход в директорию или на уровень выше
-                        if file_name == "..":
-                            self.current_directory = os.path.dirname(self.current_directory)
-                        else:
-                            self.current_directory = os.path.join(self.current_directory, file_name)
+                # Статус
+                status = "✓" if alarm['triggered'] else "○"
+                status_color = (100, 255, 100) if alarm['triggered'] else (255, 255, 100)
 
-                        self.update_file_list()
-                        self.selected_file = None
-                        self.scroll_offset = 0
-                    else:
-                        # Выбор файла
-                        self.selected_file = file_name
+                # Дата
+                date_label = pyglet.text.Label(
+                    formatted_date, font_name="Arial", font_size=14,
+                    x=50, y=y_pos,
+                    anchor_x="left", anchor_y="center",
+                    color=(200, 200, 255, 255)
+                )
+                date_label.draw()
 
-        # Проверка клика по кнопке "Установить будильник"
-        if (self.set_alarm_button.x <= x <= self.set_alarm_button.x + self.set_alarm_button.width and
-                self.set_alarm_button.y <= y <= self.set_alarm_button.y + self.set_alarm_button.height):
-            self.show_alarm_window = True
-            self.show_settings_window = False
+                # Время
+                time_label = pyglet.text.Label(
+                    alarm['time'], font_name="Arial", font_size=14,
+                    x=180, y=y_pos,
+                    anchor_x="left", anchor_y="center",
+                    color=(200, 200, 255, 255)
+                )
+                time_label.draw()
 
-            # В реальном приложении здесь будет добавление нового будильника
-            """# Для демонстрации добавим тестовый будильник
-            if len(self.alarms) < 5:
-                new_time = (datetime.now() + timedelta(minutes=1)).strftime("%H:%M")
-                self.alarms.append({'time': new_time, 'triggered': False})"""
-            # Открываем окно установки времени
-            # Проверка клика в окне установки будильника
-        if self.show_alarm_window:
-            window_width = 500
-            window_height = 400
-            window_x = (self.width - window_width) // 2
-            window_y = (self.height - window_height) // 2
+                # Статус
+                status_label = pyglet.text.Label(
+                    status, font_name="Arial", font_size=16,
+                    x=280, y=y_pos,
+                    anchor_x="center", anchor_y="center",
+                    color=status_color + (255,)
+                )
+                status_label.draw()
 
-            # Координаты 4-х кнопок с цифрами
-            digit_width = 50
-            digit_height = 70
-            start_x = window_x + 170
-            time_block_y = window_y + window_height - 120
+                # Создаем кнопку удаления
+                delete_button = Button(
+                    x=350,
+                    y=y_pos - 10,
+                    width=80,
+                    height=25,
+                    color=(200, 80, 80),
+                    text="Удалить",
+                    font_size=12
+                )
+                delete_button.draw()
+                self.delete_buttons.append((delete_button, i))
 
-            positions = [
-                (start_x, time_block_y - 10),                    # Ч1
-                (start_x + digit_width + 5, time_block_y - 10),  # Ч2
-                (start_x + 2*digit_width + 20, time_block_y - 10),  # М1
-                (start_x + 3*digit_width + 25, time_block_y - 10),  # М2
-            ]
-
-            # Проверяем клик по каждой кнопке-цифре
-            for i, (btn_x, btn_y) in enumerate(positions):
-                # Центр кнопки в btn_y, нужно пересчитать границы
-                btn_top = btn_y - digit_height//2
-                btn_bottom = btn_y + digit_height//2
-
-                if (btn_x <= x <= btn_x + digit_width and
-                        btn_top <= y <= btn_bottom):
-
-                    # Меняем цифру по кругу: 0→1→2...→9→0
-                    self.time_digits[i] = (self.time_digits[i] + 1) % 10
+    def on_mouse_press(self, x, y, button, modifiers):
+        """Обработка кликов"""
+        # Проверка кликов по кнопкам удаления
+        for delete_button, index in self.delete_buttons:
+            if delete_button.is_clicked(x, y):
+                if index < len(self.app.alarms):
+                    # Удаляем будильник
+                    del self.app.alarms[index]
+                    print(f"Будильник {index+1} удален")
+                    # Обновляем отображение
                     return
 
-            # Кнопка "Добавить будильник"
-            if (window_x + 150 <= x <= window_x + 350 and
-                    window_y + 50 <= y <= window_y + 90):
 
-                # Формируем время из цифр
-                hours = self.time_digits[0] * 10 + self.time_digits[1]
-                minutes = self.time_digits[2] * 10 + self.time_digits[3]
+class AlarmApp:
+    """Основной класс приложения"""
+    def __init__(self):
+        self.alarms = []  # Список будильников
+        self.current_sound_path = "res/alarm.wav"
+        self.alarm_player = None
 
-                # Проверяем корректность
-                if 0 <= hours <= 23 and 0 <= minutes <= 59:
-                    if len(self.alarms) < 5:  # Не больше 5 будильников
-                        time_str = f"{hours:02d}:{minutes:02d}"
-                        self.alarms.append({
-                            'time': time_str,
-                            'triggered': False
-                        })
-                        print(f"Будильник добавлен на {time_str}")
+        # Создание главного окна
+        self.main_window = MainWindow(self)
 
-                        # Сбрасываем цифры
-                        self.time_digits = [0, 0, 0, 0]
-                    else:
-                        print("Максимум 5 будильников!")
-                else:
-                    print("Некорректное время!")
-                return
-            # Закрытие при клике вне окна
-            if not (window_x <= x <= window_x + window_width and
-                    window_y <= y <= window_y + window_height):
-                self.show_alarm_window = False
-                self.time_digits = [0, 0, 0, 0]
-                return
+        # Запуск таймера обновления
+        pyglet.clock.schedule_interval(self.update, 1.0)
 
+    def update(self, dt):
+        """Обновление состояния приложения"""
+        # Обновление времени в главном окне
+        self.main_window.update_time()
 
-        # Проверка клика по кнопке "Настройки"
-        elif (self.settings_button.x <= x <= self.settings_button.x + self.settings_button.width and
-              self.settings_button.y <= y <= self.settings_button.y + self.settings_button.height):
-            self.show_settings_window = True
-            self.show_alarm_window = False
+        # Проверка срабатывания будильников
+        self.check_alarms()
 
-        # Проверяем клик по кнопке "Остановить"
-        elif (self.stop_button.x <= x <= self.stop_button.x + self.stop_button.width and
-              self.stop_button.y <= y <= self.stop_button.y + self.stop_button.height):
-            self.stop_alarm()
+    def check_alarms(self):
+        """Проверка срабатывания будильников"""
+        now = datetime.now()
+        current_date = now.strftime("%Y-%m-%d")
+        current_time = now.strftime("%H:%M")
 
+        for alarm in self.alarms:
+            if (alarm['date'] == current_date and
+                    alarm['time'] == current_time and
+                    not alarm['triggered']):
+                alarm['triggered'] = True
+                self.trigger_alarm()
 
-        # Проверка клика по кнопке "Сменить фон"
-        elif self.bg_button.x <= x <= self.bg_button.x + self.bg_button.width and self.bg_button.y <= y <= self.bg_button.y + self.bg_button.height:
-            # Открываем файловый менеджер
-            self.show_file_manager = True
-            self.show_settings_window = False
+    def trigger_alarm(self):
+        """Срабатывание будильника"""
+        print("БУДИЛЬНИК СРАБОТАЛ!")
+        try:
+            if os.path.exists(self.current_sound_path):
+                self.alarm_player = pyglet.media.Player()
+                sound = pyglet.media.load(self.current_sound_path)
+                self.alarm_player.queue(sound)
+                self.alarm_player.play()
+                self.alarm_player.loop = True
+            else:
+                print(f"Звуковой файл не найден: {self.current_sound_path}")
+        except Exception as e:
+            print(f"Ошибка воспроизведения звука: {e}")
 
-        # Закрытие вспомогательных окон при клике вне их
-        elif self.show_alarm_window or self.show_settings_window:
-            # Проверяем, был ли клик вне окна
-            window_width = 400
-            window_height = 300
-            window_x = (self.width - window_width) // 2
-            window_y = (self.height - window_height) // 2
-
-            if not (window_x <= x <= window_x + window_width and
-                    window_y <= y <= window_y + window_height):
-                self.show_alarm_window = False
-                self.show_settings_window = False
-
-
+    def stop_alarm(self):
+        """Остановка будильника"""
+        if self.alarm_player:
+            self.alarm_player.pause()
+            self.alarm_player = None
+            print("Будильник остановлен")
 
     def run(self):
         """Запуск приложения"""
         pyglet.app.run()
 
-# Создание и запуск приложения
+
 if __name__ == "__main__":
+    # Создание папки ресурсов если её нет
+    Path("res").mkdir(exist_ok=True)
+
+    # Запуск приложения
     app = AlarmApp()
     app.run()
