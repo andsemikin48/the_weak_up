@@ -1,11 +1,11 @@
 """Приложение будильник с отдельными окнами для каждой функции"""
 
 import pyglet
-from datetime import datetime, timedelta
+from datetime import datetime
 from pyglet import shapes
 import os
 from pathlib import Path
-import calendar
+
 
 
 class Button:
@@ -46,9 +46,9 @@ class Button:
 
 class BaseWindow(pyglet.window.Window):
     """Базовый класс для всех окон"""
-    def __init__(self, app, width, height, title):
+    def __init__(self, alarm_app, width, height, title):
         super().__init__(width=width, height=height, caption=title)
-        self.app = app
+        self.app = alarm_app
         self.buttons = []
         self.size_button = 260  # Стандартная ширина кнопки
 
@@ -60,6 +60,16 @@ class BaseWindow(pyglet.window.Window):
         self.buttons.append(button)
         return button
 
+    def on_mouse_press(self, x, y, button, modifiers):
+        pass
+
+    def on_key_press(self, symbol, modifiers):
+        pass
+
+    def on_close(self):
+        self.close()
+        return True
+
     def on_draw(self):
         """Базовая отрисовка окна"""
         self.clear()
@@ -67,8 +77,8 @@ class BaseWindow(pyglet.window.Window):
 
 class MainWindow(BaseWindow):
     """Главное окно приложения"""
-    def __init__(self, app):
-        super().__init__(app, width=800, height=600, title="Будильник")
+    def __init__(self, alarm_app):
+        super().__init__(alarm_app, width=800, height=600, title="Будильник")
         self.background_image = None
         self.load_background()
         self.setup_ui()
@@ -200,6 +210,27 @@ class MainWindow(BaseWindow):
         else:
             self.next_alarm_label.text = "Нет активных будильников"
 
+    def draw_alarms_list(self):
+        """Список будильников"""
+        if not self.app.alarms:
+            return
+
+        start_x = 20
+        start_y = 30
+
+        for i, alarm in enumerate(self.app.alarms[:5]):
+            y_pos = start_y + i * 34
+            day_month = f"{alarm['date'][8:10]}.{alarm['date'][5:7]}"  # Из "2024-01-01" -> "01.01"
+            status = "Сработал" if alarm['triggered'] else "Активен"
+
+            pyglet.text.Label(
+                f"{day_month} {alarm['time']} {status}",
+                font_name="Arial", font_size=24,
+                x=start_x, y=y_pos,
+                anchor_x="left", anchor_y="center",
+                color=(200, 200, 255, 255)
+            ).draw()
+
     def on_draw(self):
         """Отрисовка главного окна"""
         super().on_draw()
@@ -216,6 +247,7 @@ class MainWindow(BaseWindow):
         self.time_label.draw()
         self.date_label.draw()
         self.next_alarm_label.draw()
+        self.draw_alarms_list()
 
         # Кнопки
         for button in self.buttons:
@@ -230,25 +262,53 @@ class MainWindow(BaseWindow):
 
     def handle_button_click(self, button):
         """Обработка кликов по кнопкам главного окна"""
+        #выявился неприятный баг pyglet с обработкой отрисовки окон, поэтому отрисовываем с задержкой
         if button == self.btn_set_alarm:
-            # Получаем позицию главного окна
-            main_x, main_y = self.get_location()
-            alarm_window = AlarmWindow(self.app)
-            alarm_window.set_location(main_x + 50, main_y + 50)
+            # Откладываем создание окна
+            pyglet.clock.schedule_once(lambda dt: self.open_alarm_window(), 0.1)
 
         elif button == self.btn_settings:
-            main_x, main_y = self.get_location()
-            settings_window = SettingsWindow(self.app)
-            settings_window.set_location(main_x + 100, main_y + 100)
+            pyglet.clock.schedule_once(lambda dt: self.open_settings_window(), 0.1)
 
         elif button == self.btn_stop:
             self.app.stop_alarm()
 
         elif button == self.btn_list:
-            main_x, main_y = self.get_location()
+            pyglet.clock.schedule_once(lambda dt: self.open_list_window(), 0.1)
+
+    #и функции открытия окон
+    def open_alarm_window(self):
+        """Открыть окно будильника с задержкой"""
+        main_x, main_y = self.get_location()
+
+        # ОТЛОЖЕННОЕ создание окна
+        def create_window():
+            alarm_window = AlarmWindow(self)
+            alarm_window.set_location(main_x + 50, main_y + 50)
+
+        pyglet.clock.schedule_once(lambda dt: create_window(), 0.05)
+
+    def open_settings_window(self):
+        """Открыть окно настроек с задержкой"""
+        main_x, main_y = self.get_location()
+
+        # ОТЛОЖЕННОЕ создание окна
+        def create_window():
+            settings_window = SettingsWindow(self.app)
+            settings_window.set_location(main_x + 100, main_y + 100)
+
+        pyglet.clock.schedule_once(lambda dt: create_window(), 0.05)
+
+    def open_list_window(self):
+        """Открыть окно списка с задержкой"""
+        main_x, main_y = self.get_location()
+
+        # ОТЛОЖЕННОЕ создание окна
+        def create_window():
             list_window = AlarmListWindow(self.app)
             list_window.set_location(main_x + 150, main_y + 150)
 
+        pyglet.clock.schedule_once(lambda dt: create_window(), 0.05)
 
 class AlarmWindow(pyglet.window.Window):
     """Окно установки будильника"""
@@ -266,7 +326,8 @@ class AlarmWindow(pyglet.window.Window):
         self.date_digits = [int(digit) for digit in date_str]
 
         # Загрузка спрайтов
-        self.digit_sprites = self.load_digit_sprites()
+        self.time_sprites = self.load_digit_sprites()
+        self.date_sprites = self.load_digit_sprites()
 
         # Области кликов
         self.time_areas = []
@@ -282,11 +343,12 @@ class AlarmWindow(pyglet.window.Window):
             try:
                 path = Path(f"res/{i}.png")
                 if path.exists():
-                    images = pyglet.image.load_animation(str(path))
+                    images = pyglet.image.load(str(path))
                     sprite = pyglet.sprite.Sprite(images, x=0, y=0)
                     sprite.scale= 0.7
-                    digit_sprites.append(pyglet.sprite.Sprite(images))
+                    digit_sprites.append(sprite)
                 else:
+                    print(f"Не найден файл {path}")
                     digit_sprites.append(None)
             except:
                 digit_sprites.append(None)
@@ -312,8 +374,8 @@ class AlarmWindow(pyglet.window.Window):
         time_y = self.height - 100
         for i in range(4):
             x_pos = time_x + i * 60
-            if i == 1:
-                x_pos += 20
+            if i == 2:
+                x_pos += 30
             elif i > 2:
                 x_pos += 20
             self.time_areas.append((x_pos, time_y - 25, 40, 50, i))
@@ -325,7 +387,8 @@ class AlarmWindow(pyglet.window.Window):
         for i in range(8):
             x_pos = date_x + i * 40 + offset_click
             if i == 2 or i ==4:
-                offset_click += 20
+                offset_click += 30
+                x_pos += 30
             if not (i == 4 or i == 5):
                 self.date_areas.append((x_pos, date_y - 20, 25, 40, i))
 
@@ -335,7 +398,7 @@ class AlarmWindow(pyglet.window.Window):
 
         # Фон
         shapes.Rectangle(0, 0, self.width, self.height,
-                         color=(0, 0, 0)).draw()
+                         color=(0, 0, 100)).draw()
 
         # Заголовок
         title = pyglet.text.Label(
@@ -363,21 +426,28 @@ class AlarmWindow(pyglet.window.Window):
         )
         date_label.draw()
 
-        # Отрисовка времени
+        # Двоеточие
         time_y = self.height - 100
+        colon_x = 150 + 2 * 50 + 5
+        colon = (pyglet.sprite.Sprite(pyglet.image.load("res/dthc.png"), x=colon_x, y=time_y-25))
+        colon.scale = 0.7
+        colon.draw()
+
+
+        # Отрисовка времени
         for i in range(4):
             x_pos = 150 + i * 60
             if i == 2:
-                x_pos += 20
+                x_pos += 30
             elif i > 2:
                 x_pos += 20
 
             digit = self.time_digits[i]
-            sprite = self.digit_sprites[digit]
+            sprite = self.time_sprites[digit]
             if sprite is not None:
-                sprite.x = x_pos
-                sprite.y = time_y - 25
-                sprite.draw()
+                sprite_copy = pyglet.sprite.Sprite(sprite.image, x=x_pos, y=time_y -25)
+                sprite_copy.scale = 0.7
+                sprite_copy.draw()
             else:
                 label = pyglet.text.Label(
                     str(digit), font_name="Arial", font_size=36,
@@ -387,28 +457,31 @@ class AlarmWindow(pyglet.window.Window):
                 )
                 label.draw()
 
-        # Двоеточие
-        colon_x = 150 + 2 * 50 + 5
-        colon = (pyglet.sprite.Sprite(pyglet.image.load("res/dthc.png"), x=colon_x, y=time_y-25))
-        colon.scale = 0.75
-        colon.draw()
-
-        # Отрисовка даты
+        # Точки в дате
         date_y = self.height - 180
         offset = 0
+        for pos in [2, 5]:
+            dot_x = 150 + pos * 30 + 30
+            dot = pyglet.sprite.Sprite(pyglet.image.load("res/thc.png"))
+            dot.x = dot_x
+            dot.y = date_y - 20
+            dot.scale = 0.7
+            dot.draw()
+
+        # Отрисовка даты
+
         for i in range(8):
             x_pos = 150 + i * 40 + offset
             if i == 2 or i == 4:
-                x_pos += 20
-                offset += 20
+                x_pos += 30
+                offset += 30
 
             digit = self.date_digits[i]
-            sprite = self.digit_sprites[digit]
+            sprite = self.date_sprites[digit]
             if sprite is not None:
-                sprite.x = x_pos
-
-                sprite.y = date_y - 20
-                sprite.draw()
+                sprite_copy = pyglet.sprite.Sprite(sprite.image, x=x_pos, y=date_y - 20)
+                sprite_copy.scale = 0.7
+                sprite_copy.draw()
             else:
                 label = pyglet.text.Label(
                     str(digit), font_name="Arial", font_size=28,
@@ -417,15 +490,6 @@ class AlarmWindow(pyglet.window.Window):
                     color=(255, 255, 255, 255)
                 )
                 label.draw()
-
-        # Точки в дате
-        for pos in [2, 5]:
-            dot_x = 150 + pos * 30 + 20
-            dot = pyglet.sprite.Sprite(pyglet.image.load("res/thc.png"))
-            dot.x = dot_x
-            dot.y = date_y - 20
-            dot.scale = 0.5
-            dot.draw()
 
         # Кнопка
         self.btn_add.draw()
@@ -497,7 +561,7 @@ class AlarmWindow(pyglet.window.Window):
     def add_alarm(self):
         """Добавить будильник"""
         # Проверяем количество
-        if len(self.main_window.alarms) >= 5:
+        if len(self.main_window.app.alarms) >= 5:
             print("Максимум 5 будильников!")
             return
 
@@ -533,12 +597,8 @@ class AlarmWindow(pyglet.window.Window):
             'triggered': False
         }
 
-        self.main_window.alarms.append(new_alarm)
+        self.main_window.app.alarms.append(new_alarm)
         print(f"Будильник добавлен: {new_alarm['date']} {new_alarm['time']}")
-
-        # Закрываем окно
-        self.close()
-
 
 class SettingsWindow(BaseWindow):
     """Окно настроек"""
@@ -619,9 +679,8 @@ class SettingsWindow(BaseWindow):
             print("Смена мелодии (тут пока ищу решение)")
 
         elif button == self.btn_reset:
-            self.app.alarms.clear()
+            pyglet.clock.schedule_once(lambda dt: self.app.alarms.clear(), 0.1)
             print("Все будильники сброшены")
-
 
 class AlarmListWindow(BaseWindow):
     """Окно списка будильников"""
@@ -749,7 +808,7 @@ class AlarmApp:
 
     def update(self, dt):
         """Обновление состояния приложения"""
-        # Обновление времени в главном окне
+        print("Обновление времени в главном окне")
         self.main_window.update_time()
 
         # Проверка срабатывания будильников
